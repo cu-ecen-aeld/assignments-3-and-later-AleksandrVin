@@ -16,7 +16,7 @@ bool do_system(const char *cmd)
  *   and return a boolean true if the system() call completed with success
  *   or false() if it returned a failure
 */
-
+    if(system(cmd)) return false;
     return true;
 }
 
@@ -58,10 +58,25 @@ bool do_exec(int count, ...)
  *   as second argument to the execv() command.
  *
 */
+    pid_t pid = fork();
+    if(pid == -1)
+	    return false;
+    if(pid == 0)
+    {
+	    execv(command[0], command); 
+	    exit(-1); // in case of execv failure
+    }
+
+    int status;
+
+    if(waitpid(pid, &status, 0) == -1)
+	   return false;
+    if(!WIFEXITED(status))
+	   return false;
 
     va_end(args);
 
-    return true;
+    return WEXITSTATUS(status) == 0 ? true : false;
 }
 
 /**
@@ -92,8 +107,38 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
+    int fd = open(outputfile, O_WRONLY|O_TRUNC|O_CREAT, 0664);
+    if(fd < 0)
+    {
+	    perror("can't open file provided"); return false;
+    }
+
+    pid_t pid = fork();
+    if(pid == -1)
+	    return false;
+    if(pid == 0) // child branch
+    {
+	    if(dup2(fd, 1) < 0) // dup2 will close fd=1 and then copy fd to 1 atomicly
+	    {
+		    perror("dup2 failed");
+		    return false;
+	    }
+	    close(fd);
+	    execv(command[0], command); 
+	    exit(-1); // in case of execv failure
+    }
+
+    close(fd); // parrent may close file before wait because when fork, fd was copied to child
+
+    int status;
+
+    if(waitpid(pid, &status, 0) == -1)
+	   return false;
+
+    if(!WIFEXITED(status))
+	   return false;
 
     va_end(args);
 
-    return true;
+    return WEXITSTATUS(status) == 0 ? true : false; 
 }
