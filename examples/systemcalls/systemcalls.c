@@ -18,6 +18,12 @@ bool do_system(const char *cmd)
 */
     if(system(cmd)) return false;
     return true;
+
+    int status = system(cmd);
+    if (WIFEXITED(status))
+    {
+	    return WEXITSTATUS(status) == 0;
+    }
 }
 
 /**
@@ -49,6 +55,8 @@ bool do_exec(int count, ...)
     // and may be removed
     command[count] = command[count];
 
+    va_end(args);
+
 /*
  * TODO:
  *   Execute a system command by calling fork, execv(),
@@ -71,12 +79,13 @@ bool do_exec(int count, ...)
 
     if(waitpid(pid, &status, 0) == -1)
 	   return false;
-    if(!WIFEXITED(status))
-	   return false;
 
-    va_end(args);
+    if(WIFEXITED(status))
+    {
+    	return WEXITSTATUS(status) == 0;
+    }
 
-    return WEXITSTATUS(status) == 0 ? true : false;
+    return false;
 }
 
 /**
@@ -99,6 +108,7 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
     // and may be removed
     command[count] = command[count];
 
+    va_end(args);
 
 /*
  * TODO
@@ -135,10 +145,9 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
     if(waitpid(pid, &status, 0) == -1)
 	   return false;
 
-    if(!WIFEXITED(status))
-	   return false;
-
-    va_end(args);
-
-    return WEXITSTATUS(status) == 0 ? true : false; 
+    if(WIFEXITED(status))
+    {
+    	return WEXITSTATUS(status) == 0;
+    }
+    return false; 
 }
