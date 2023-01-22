@@ -6,4 +6,4 @@ $(target):
 
 clean:
 	rm -rf *.o
-	rm $(target)
+	rm -f $(target)
