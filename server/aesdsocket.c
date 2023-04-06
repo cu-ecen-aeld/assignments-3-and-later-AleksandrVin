@@ -74,6 +74,8 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
+    syslog(LOG_INFO, "Server listening on port %d", PORT);
+
     // parse command line arguments
     while ((opt = getopt(argc, argv, "d")) != -1)
     {
