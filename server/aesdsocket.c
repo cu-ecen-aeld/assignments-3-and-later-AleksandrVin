@@ -10,6 +10,11 @@
 #include <fcntl.h>
 #include <string.h>
 #include <signal.h>
+#include <errno.h>
+
+#include <pthread.h>
+
+#include <sys/queue.h>
 
 #define PORT 9000
 #define BUFF_SIZE 100 + 1 // +1 for null character
@@ -18,6 +23,189 @@
 int sk = -1;
 
 int exit_flag = 0;
+
+// struct for linked list
+struct node
+{
+    // thread id
+    pthread_t tid;
+    int client_sk;
+    int fd;
+    // client address
+    struct sockaddr_in client_addr;
+    // mutex reference
+    pthread_mutex_t *mutex;
+    // finished flag
+    int finished; // 0 - not finished, 1 - finished
+    // linked list
+    TAILQ_ENTRY(node)
+    nodes;
+};
+
+#define JOIN_FINISHED_THREADS(node, head, nodes)         \
+    TAILQ_FOREACH(node, &head, nodes)                     \
+    {                                                     \
+        if (node->finished == 1)                          \
+        {                                                 \
+            int ret = pthread_join(node->tid, NULL);      \
+            if (ret < 0)                                  \
+            {                                             \
+                syslog(LOG_ERR, "pthread_join() failed"); \
+                exit(EXIT_FAILURE);                       \
+            }                                             \
+            TAILQ_REMOVE(&head, node, nodes);             \
+            free(node);                                   \
+        }                                                 \
+    }
+
+// thread function
+static void *thread_start(void *arg)
+{
+    struct node *node = arg;
+
+    char buf[BUFF_SIZE];
+    buf[BUFF_SIZE - 1] = '\0';
+
+    int new_line = 0;
+
+    while (new_line == 0)
+    {
+        int bytes_read = read(node->client_sk, buf, sizeof(buf));
+        if (bytes_read < 0)
+        {
+            syslog(LOG_ERR, "read() failed");
+            exit(EXIT_FAILURE);
+        }
+
+        if (bytes_read == 0)
+        {
+            break;
+        }
+
+        // find the new line character using strchr
+        char *new_line_ptr = strchr(buf, '\n');
+        if (new_line_ptr != NULL)
+        {
+            // new line character found
+            bytes_read = (new_line_ptr - buf) + 1;
+            new_line = 1;
+        }
+
+        // lock the mutex
+        pthread_mutex_lock(node->mutex);
+
+        int bytes_written = write(node->fd, buf, bytes_read);
+        if (bytes_written < 0)
+        {
+            syslog(LOG_ERR, "write() failed");
+            exit(EXIT_FAILURE);
+        }
+
+        // unlock the mutex
+        pthread_mutex_unlock(node->mutex);
+    }
+
+    // save fd position
+    off_t fd_pos = lseek(node->fd, 0, SEEK_CUR);
+
+    // lock mutex
+    pthread_mutex_lock(node->mutex);
+
+    // lseek to the beginning of the file
+    lseek(node->fd, 0, SEEK_SET);
+
+    while (1)
+    {
+        int bytes_read = read(node->fd, buf, sizeof(buf));
+        if (bytes_read < 0)
+        {
+            syslog(LOG_ERR, "read() failed");
+            exit(EXIT_FAILURE);
+        }
+
+        if (bytes_read == 0)
+        {
+            break;
+        }
+
+        int bytes_written = write(node->client_sk, buf, bytes_read);
+        if (bytes_written < 0)
+        {
+            syslog(LOG_ERR, "write() failed");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    // lseek to the saved position
+    lseek(node->fd, fd_pos, SEEK_SET);
+
+    // unlock mutex
+    pthread_mutex_unlock(node->mutex);
+
+    // syslog that connection closed
+    syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(node->client_addr.sin_addr));
+
+    close(node->client_sk);
+
+    node->finished = 1;
+
+    return arg;
+}
+
+// thread function for printing timestamp every 10 seconds
+static void *thread_timestamp(void *arg)
+{
+    struct node * node = arg;
+    // enable thread cancellation
+    int ret = pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    if (ret < 0)
+    {
+        syslog(LOG_ERR, "pthread_setcancelstate() failed");
+        exit(EXIT_FAILURE);
+    }
+
+    while (exit_flag == 0)
+    {
+        sleep(10);
+        //syslog(LOG_INFO, "Timestamp");
+        // print RFC 2822 timestamp to fd
+        time_t t = time(NULL);
+        struct tm *tm = localtime(&t);
+        char buf[100];
+        strftime(buf, sizeof(buf), "timestamp:%a, %d %b %Y %T %z\n", tm);
+        buf[sizeof(buf) - 1] = '\0';
+        syslog(LOG_INFO, "%s", buf);
+        // disable thread cancellation
+        ret = pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+        if (ret < 0)
+        {
+            syslog(LOG_ERR, "pthread_setcancelstate() failed");
+            exit(EXIT_FAILURE);
+        }
+
+        // lock the mutex
+        pthread_mutex_lock(node->mutex);
+        int bytes_written = write(node->fd, buf, strlen(buf));
+        if (bytes_written < 0)
+        {
+            syslog(LOG_ERR, "write() failed");
+            exit(EXIT_FAILURE);
+        }
+        // unlock the mutex
+        pthread_mutex_unlock(node->mutex);
+        // enable thread cancellation
+        ret = pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+        if (ret < 0)
+        {
+            syslog(LOG_ERR, "pthread_setcancelstate() failed");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    node->finished = 1;
+
+    return arg;
+}
 
 // signal handler for SIGINT and SIGTERM
 // close the socket and exit
@@ -116,6 +304,29 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
+    // create a mutex for looking fd
+    pthread_mutex_t mutex;
+    pthread_mutex_init(&mutex, NULL);
+
+    struct node node_timestamp;
+    node_timestamp.fd = fd;
+    node_timestamp.finished = 0;
+    node_timestamp.mutex = &mutex;
+
+    // start timestamp thread
+    pthread_t timestamp_thread;
+    ret = pthread_create(&timestamp_thread, NULL, thread_timestamp, &node_timestamp);
+    if (ret < 0)
+    {
+        syslog(LOG_ERR, "pthread_create() failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // create a linked list
+    TAILQ_HEAD(tailhead, node)
+    head;
+    TAILQ_INIT(&head);
+
     while (exit_flag == 0)
     {
 
@@ -124,78 +335,77 @@ int main(int argc, char *argv[])
         int client_sk = accept(sk, (struct sockaddr *)&client_addr, &client_addr_len);
         if (client_sk < 0)
         {
-            syslog(LOG_ERR, "accept() failed");
+            if (errno == EINTR)
+            {
+                syslog(LOG_INFO, "Caught signal, exiting");
+                break;
+            }
+            syslog(LOG_ERR, "accept() failed %s", strerror(errno));
             exit(EXIT_FAILURE);
         }
 
         // syslog accepted connection from client
         syslog(LOG_INFO, "Accepted connection from %s", inet_ntoa(client_addr.sin_addr));
 
-        char buf[BUFF_SIZE];
-        buf[BUFF_SIZE - 1] = '\0';
+        struct node *node = malloc(sizeof(struct node));
 
-        int new_line = 0;
+        node->client_sk = client_sk;
+        node->fd = fd;
+        node->mutex = &mutex;
+        node->finished = 0;
+        node->client_addr = client_addr;
 
-        while (new_line == 0)
+        TAILQ_INSERT_TAIL(&head, node, nodes);
+
+        // create a thread
+        pthread_t thread;
+        ret = pthread_create(&thread, NULL, thread_start, node);
+        if (ret < 0)
         {
-            int bytes_read = read(client_sk, buf, sizeof(buf));
-            if (bytes_read < 0)
-            {
-                syslog(LOG_ERR, "read() failed");
-                exit(EXIT_FAILURE);
-            }
-
-            if (bytes_read == 0)
-            {
-                break;
-            }
-
-            // find the new line character using strchr
-            char *new_line_ptr = strchr(buf, '\n');
-            if (new_line_ptr != NULL)
-            {
-                // new line character found
-                bytes_read = (new_line_ptr - buf) + 1;
-                new_line = 1;
-            }
-
-            int bytes_written = write(fd, buf, bytes_read);
-            if (bytes_written < 0)
-            {
-                syslog(LOG_ERR, "write() failed");
-                exit(EXIT_FAILURE);
-            }
+            syslog(LOG_ERR, "pthread_create() failed");
+            exit(EXIT_FAILURE);
         }
 
-        // lseek to the beginning of the file
-        lseek(fd, 0, SEEK_SET);
+        node->tid = thread;
 
-        while (1)
+        // loop through the linked list and check if any thread has finished
+        JOIN_FINISHED_THREADS(node, head, nodes)
+    }
+
+    // wait for all threads to finish
+    while (!TAILQ_EMPTY(&head))
+    {
+        struct node *node;
+        TAILQ_FOREACH(node, &head, nodes)
         {
-            int bytes_read = read(fd, buf, sizeof(buf));
-            if (bytes_read < 0)
+            if (node->finished == 1)
             {
-                syslog(LOG_ERR, "read() failed");
-                exit(EXIT_FAILURE);
-            }
-
-            if (bytes_read == 0)
-            {
-                break;
-            }
-
-            int bytes_written = write(client_sk, buf, bytes_read);
-            if (bytes_written < 0)
-            {
-                syslog(LOG_ERR, "write() failed");
-                exit(EXIT_FAILURE);
+                ret = pthread_join(node->tid, NULL);
+                if (ret < 0)
+                {
+                    syslog(LOG_ERR, "pthread_join() failed");
+                    exit(EXIT_FAILURE);
+                }
+                TAILQ_REMOVE(&head, node, nodes);
+                free(node);
             }
         }
+    }
 
-        // syslog that connection closed
-        syslog(LOG_INFO, "Closed connection from %s", inet_ntoa(client_addr.sin_addr));
+    // cancel timestamp thread
+    ret = pthread_cancel(timestamp_thread);
+    if (ret < 0)
+    {
+        syslog(LOG_ERR, "pthread_cancel() failed");
+        exit(EXIT_FAILURE);
+    }
 
-        close(client_sk);
+    // join timestamp thread
+    ret = pthread_join(timestamp_thread, NULL);
+    if (ret < 0)
+    {
+        syslog(LOG_ERR, "pthread_join() failed");
+        exit(EXIT_FAILURE);
     }
 
     close(fd);
