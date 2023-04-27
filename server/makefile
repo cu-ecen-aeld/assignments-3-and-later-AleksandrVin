@@ -1,15 +1,10 @@
-PLATFORM ?= HOST
-CROSS_COMPILE = 
+CC ?= $(CROSS_COMPILE)gcc
 
-ifeq ($(PLATFORM), AARCH64)
-	CROSS_COMPILE = aarch64-none-linux-gnu-
-endif
+CFLAGS ?= -Wall -g -O2 -Wall -Werror -pthread
 
-CC=$(CROSS_COMPILE)gcc
+target ?= aesdsocket
 
-CFLAGS=-Wall -g -O2 -Wall -Werror -pthread
-
-target=aesdsocket
+LDFLAGS ?= -lpthread
 
 $(target):
 
