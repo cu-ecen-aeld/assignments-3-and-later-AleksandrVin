@@ -49,6 +49,7 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct
             }
         }
     }
+
     AESD_CIRCULAR_BUFFER_FOREACH(entry, buffer, i)
     {
         if (i < buffer->in_offs)
