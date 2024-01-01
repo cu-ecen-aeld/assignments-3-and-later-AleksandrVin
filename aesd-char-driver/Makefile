@@ -9,7 +9,8 @@ else
   DEBFLAGS = -O2
 endif
 
-EXTRA_CFLAGS += $(DEBFLAGS)
+# follow ISO C90 rules for kernel module compilation
+EXTRA_CFLAGS += $(DEBFLAGS) -std=gnu99 -Wno-declaration-after-statement
 
 ifneq ($(KERNELRELEASE),)
 # call from kernel build system
