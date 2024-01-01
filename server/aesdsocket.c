@@ -24,6 +24,15 @@ int sk = -1;
 
 int exit_flag = 0;
 
+#ifndef USE_AESD_CHAR_DEVICE
+#define USE_AESD_CHAR_DEVICE 1
+#endif
+#if USE_AESD_CHAR_DEVICE == 1
+#define AESD_FILE "/dev/aesdchar"
+#else
+#define AESD_FILE "/var/tmp/aesdsocketdata"
+#endif
+
 // struct for linked list
 struct node
 {
@@ -112,7 +121,11 @@ static void *thread_start(void *arg)
     pthread_mutex_lock(node->mutex);
 
     // lseek to the beginning of the file
-    lseek(node->fd, 0, SEEK_SET);
+    if(lseek(node->fd, 0, SEEK_SET) != 0)
+    {
+        syslog(LOG_ERR, "can't lseek to beginning");
+        exit(EXIT_FAILURE);
+    }
 
     while (1)
     {
@@ -167,6 +180,9 @@ static void *thread_timestamp(void *arg)
     while (exit_flag == 0)
     {
         sleep(10);
+#if USE_AESD_CHAR_DEVICE == 1
+        // no timestamp for aesd-char-driver
+#else
         //syslog(LOG_INFO, "Timestamp");
         // print RFC 2822 timestamp to fd
         time_t t = time(NULL);
@@ -200,6 +216,7 @@ static void *thread_timestamp(void *arg)
             syslog(LOG_ERR, "pthread_setcancelstate() failed");
             exit(EXIT_FAILURE);
         }
+#endif
     }
 
     node->finished = 1;
@@ -297,7 +314,7 @@ int main(int argc, char *argv[])
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    int fd = open("/var/tmp/aesdsocketdata", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    int fd = open(AESD_FILE, O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (fd < 0)
     {
         syslog(LOG_ERR, "open() failed");
@@ -411,7 +428,9 @@ int main(int argc, char *argv[])
     close(fd);
     close(sk);
     // delete the file
-    unlink("/var/tmp/aesdsocketdata");
+#if USE_AESD_CHAR_DEVICE != 1
+    unlink(AESD_FILE);
+#endif
 
     return 0;
 }
