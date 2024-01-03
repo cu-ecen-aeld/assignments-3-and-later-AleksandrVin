@@ -19,6 +19,8 @@
 #include <linux/fs.h> // file_operations
 #include <linux/slab.h>
 #include "aesdchar.h"
+
+#include "aesd_ioctl.h"
 int aesd_major = 0; // use dynamic major
 int aesd_minor = 0;
 
@@ -179,37 +181,71 @@ out:
 
 loff_t aesd_llseek(struct file * filp, loff_t f_pos, int seek)
 {
-    loff_t retval = 0;
     struct aesd_dev *dev = filp->private_data;
-    if(seek != SEEK_SET)
-    {
-        PDEBUG("seek other the SEEK_SET is unsupported");
-        return -ESPIPE;
-    }
     PDEBUG("llseek with f_pos:%lld\n", f_pos);
     PDEBUG("llseek seek is %d\n", seek);
 
-    // lock mutex
-    if(mutex_lock_interruptible(&dev->buffer_mutex))
-    {
-        PDEBUG("Error locking mutex");
-        return -ERESTARTSYS;
-    }
+    return fixed_size_llseek(filp, f_pos, seek, dev->buffer.total_size);
+}
 
-    if(f_pos < 0)
+loff_t aesd_find_offset_of_command(struct aesd_circular_buffer * buffer, int command_index, int offset_in_command)
+{
+    int command_index_in_buffer = 0;
+    int index = 0;
+    struct aesd_buffer_entry *entry;
+    loff_t offset = 0;
+    if(command_index < 0 || command_index >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
     {
-        PDEBUG("f_pos is less than 0");
-        retval = -EINVAL;
-        goto out;
+        return -1;
     }
-    
-    filp->f_pos = f_pos;
-    retval = filp->f_pos;
+    command_index_in_buffer = (buffer->out_offs + command_index) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+    if(buffer->entry[command_index_in_buffer].buffptr == NULL)
+    {
+        return -1;
+    }
+    if(offset_in_command < 0 || offset_in_command >= buffer->entry[command_index_in_buffer].size)
+    {
+        return -1;
+    }
+    AESD_CIRCULAR_BUFFER_FOREACH(entry, buffer, index)
+    {
+        if(index == command_index_in_buffer)
+        {
+            return (loff_t)(offset + offset_in_command);
+        }
+        offset += entry->size;
+    }
+    return -1;
+}
 
-out:
-    // unlock mutex
-    mutex_unlock(&aesd_device.buffer_mutex);
-    return retval;
+
+long int aesd_ioctl(struct file * filp, unsigned int request, long unsigned int command)
+{
+    loff_t offset;
+    struct aesd_seekto command_struct_local;
+    if(request != AESDCHAR_IOCSEEKTO)
+    {
+        PDEBUG("Wrong ioctl request");
+        return -EINVAL;
+    }
+    if(copy_from_user(&command_struct_local, (const void __user*)command, sizeof(struct aesd_seekto)))
+    {
+        PDEBUG("Error copying from user");
+        return -EFAULT;
+    }
+    offset = aesd_find_offset_of_command(&aesd_device.buffer, command_struct_local.write_cmd, command_struct_local.write_cmd_offset);
+    if(offset < 0)
+    {
+        PDEBUG("Error finding offset");
+        return -EINVAL;
+    }
+    if(aesd_llseek(filp, offset, SEEK_SET) < 0)
+    {
+        PDEBUG("Error seeking");
+        return -EINVAL;
+    }
+    PDEBUG("ioctl seek to %lld", offset);
+    return 0;
 }
 
 struct file_operations aesd_fops = {
@@ -219,6 +255,7 @@ struct file_operations aesd_fops = {
     .open = aesd_open,
     .release = aesd_release,
     .llseek = aesd_llseek,
+    .unlocked_ioctl = aesd_ioctl,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)

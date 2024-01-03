@@ -16,6 +16,8 @@
 
 #include <sys/queue.h>
 
+#include "../aesd-char-driver/aesd_ioctl.h"
+
 #define PORT 9000
 #define BUFF_SIZE 100 + 1 // +1 for null character
 // #define EXIT_FAILURE -1
@@ -51,7 +53,7 @@ struct node
     nodes;
 };
 
-#define JOIN_FINISHED_THREADS(node, head, nodes)         \
+#define JOIN_FINISHED_THREADS(node, head, nodes)          \
     TAILQ_FOREACH(node, &head, nodes)                     \
     {                                                     \
         if (node->finished == 1)                          \
@@ -76,6 +78,9 @@ static void *thread_start(void *arg)
     buf[BUFF_SIZE - 1] = '\0';
 
     int new_line = 0;
+#if USE_AESD_CHAR_DEVICE == 1
+    struct aesd_seekto command = {0, 0};
+#endif
 
     while (new_line == 0)
     {
@@ -95,6 +100,21 @@ static void *thread_start(void *arg)
         char *new_line_ptr = strchr(buf, '\n');
         if (new_line_ptr != NULL)
         {
+#if USE_AESD_CHAR_DEVICE == 1
+            // check if ioctl is supplied in format AESDCHAR_IOCSEEKTO:X,Y
+            int command_index = 0;
+            int offset_in_command = 0;
+            int command_scanned = sscanf(buf, "AESDCHAR_IOCSEEKTO:%d,%d", &command_index, &offset_in_command);
+            if (command_scanned == 2)
+            {
+                command.write_cmd = command_index;
+                command.write_cmd_offset = offset_in_command;
+                // if ioctl is supplied, make ioctl system call
+                syslog(LOG_INFO, "ioctl command received");
+                syslog(LOG_INFO, "command_index: %d, offset_in_command: %d", command_index, offset_in_command);
+                break;
+            }
+#endif
             // new line character found
             bytes_read = (new_line_ptr - buf) + 1;
             new_line = 1;
@@ -120,12 +140,21 @@ static void *thread_start(void *arg)
     // lock mutex
     pthread_mutex_lock(node->mutex);
 
+#if USE_AESD_CHAR_DEVICE == 1
+    // ioctl to with command index and command offset
+    if (ioctl(node->fd, AESDCHAR_IOCSEEKTO, &command) != 0)
+    {
+        syslog(LOG_ERR, "ioctl() failed");
+        exit(EXIT_FAILURE);
+    }
+#else
     // lseek to the beginning of the file
-    if(lseek(node->fd, 0, SEEK_SET) != 0)
+    if (lseek(node->fd, 0, SEEK_SET) != 0)
     {
         syslog(LOG_ERR, "can't lseek to beginning");
         exit(EXIT_FAILURE);
     }
+#endif
 
     while (1)
     {
@@ -168,7 +197,7 @@ static void *thread_start(void *arg)
 // thread function for printing timestamp every 10 seconds
 static void *thread_timestamp(void *arg)
 {
-    struct node * node = arg;
+    struct node *node = arg;
     // enable thread cancellation
     int ret = pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
     if (ret < 0)
@@ -183,8 +212,8 @@ static void *thread_timestamp(void *arg)
 #if USE_AESD_CHAR_DEVICE == 1
         // no timestamp for aesd-char-driver
 #else
-        //syslog(LOG_INFO, "Timestamp");
-        // print RFC 2822 timestamp to fd
+        // syslog(LOG_INFO, "Timestamp");
+        //  print RFC 2822 timestamp to fd
         time_t t = time(NULL);
         struct tm *tm = localtime(&t);
         char buf[100];
