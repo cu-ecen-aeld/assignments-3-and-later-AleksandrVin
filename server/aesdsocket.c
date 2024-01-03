@@ -371,19 +371,13 @@ int main(int argc, char *argv[])
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    int fd = open(AESD_FILE, O_RDWR | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0)
-    {
-        syslog(LOG_ERR, "open() failed");
-        exit(EXIT_FAILURE);
-    }
 
     // create a mutex for looking fd
     pthread_mutex_t mutex;
     pthread_mutex_init(&mutex, NULL);
 
     struct node node_timestamp;
-    node_timestamp.fd = fd;
+    node_timestamp.fd = -1;
     node_timestamp.finished = 0;
     node_timestamp.mutex = &mutex;
 
@@ -424,7 +418,7 @@ int main(int argc, char *argv[])
         struct node *node = malloc(sizeof(struct node));
 
         node->client_sk = client_sk;
-        node->fd = fd;
+        node->fd = -1;
         node->mutex = &mutex;
         node->finished = 0;
         node->client_addr = client_addr;
@@ -482,7 +476,6 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    close(fd);
     close(sk);
     // delete the file
 #if USE_AESD_CHAR_DEVICE != 1
