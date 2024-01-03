@@ -122,6 +122,12 @@ static void *thread_start(void *arg)
 
         // lock the mutex
         pthread_mutex_lock(node->mutex);
+        node->fd = open(AESD_FILE, O_RDWR | O_CREAT | O_TRUNC, 0644);
+        if (node->fd < 0)
+        {
+            syslog(LOG_ERR, "open() failed");
+            exit(EXIT_FAILURE);
+        }
 
         int bytes_written = write(node->fd, buf, bytes_read);
         if (bytes_written < 0)
@@ -130,15 +136,26 @@ static void *thread_start(void *arg)
             exit(EXIT_FAILURE);
         }
 
+        close(node->fd);
+
         // unlock the mutex
         pthread_mutex_unlock(node->mutex);
     }
 
-    // save fd position
-    off_t fd_pos = lseek(node->fd, 0, SEEK_CUR);
+
 
     // lock mutex
     pthread_mutex_lock(node->mutex);
+    
+    // save fd position
+    off_t fd_pos = lseek(node->fd, 0, SEEK_CUR);
+    
+    node->fd = open(AESD_FILE, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (node->fd < 0)
+    {
+        syslog(LOG_ERR, "open() failed");
+        exit(EXIT_FAILURE);
+    }
 
 #if USE_AESD_CHAR_DEVICE == 1
     // ioctl to with command index and command offset
@@ -180,6 +197,8 @@ static void *thread_start(void *arg)
 
     // lseek to the saved position
     lseek(node->fd, fd_pos, SEEK_SET);
+
+    close(node->fd);
 
     // unlock mutex
     pthread_mutex_unlock(node->mutex);
@@ -230,12 +249,21 @@ static void *thread_timestamp(void *arg)
 
         // lock the mutex
         pthread_mutex_lock(node->mutex);
+
+        // open the file
+        node->fd = open(AESD_FILE, O_RDWR | O_CREAT | O_TRUNC, 0644);
+        if (node->fd < 0)
+        {
+            syslog(LOG_ERR, "open() failed");
+            exit(EXIT_FAILURE);
+        }
         int bytes_written = write(node->fd, buf, strlen(buf));
         if (bytes_written < 0)
         {
             syslog(LOG_ERR, "write() failed");
             exit(EXIT_FAILURE);
         }
+        close(node->fd);
         // unlock the mutex
         pthread_mutex_unlock(node->mutex);
         // enable thread cancellation
